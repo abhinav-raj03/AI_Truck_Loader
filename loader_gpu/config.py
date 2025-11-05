@@ -18,9 +18,9 @@ class Flags:
     delivery_sequence: bool = True
     orientation_allowed: bool = True
 
-MAX_LAYERS: int = 3
-SUPPORT_RATIO: float = 0.75
-GRID_STEP: float = 0.10  # 10 cm grid
+MAX_LAYERS: int = 4
+SUPPORT_RATIO: float = 0.60
+GRID_STEP: float = 0.05  # 10 cm grid
 
 ALPHA_VOL: int = 10
 BETA_WT: int = 1
