@@ -2,6 +2,11 @@ import torch, random
 from typing import List
 from .models import Item
 from .config import ALPHA_VOL, BETA_WT
+from .packer_cpu import pack
+from .config import Flags
+
+# def device_auto():
+#     return torch.device("cpu")
 
 def device_auto():
     return torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -57,22 +62,18 @@ def ga_reorder(items: List[Item], truck, population=64, generations=20, seed=123
             p1 = elites[rnd.randrange(elites.shape[0])].clone()
             p2 = elites[rnd.randrange(elites.shape[0])].clone()
             # --- SAFE ORDER CROSSOVER (OX) ---
+            N = len(p1)
             a, b = sorted([rnd.randrange(N), rnd.randrange(N)])
-
             child = [-1] * N
-            seg = p1[a:b]
+            seg = p1[a:b].tolist()
             child[a:b] = seg
-
             used = set(seg)
-            fill_values = [g for g in p2 if g not in used]
-
+            fill = [g for g in p2.tolist() if g not in used]
             pos = b
-            for g in fill_values:
-                if pos >= N:
-                    pos = 0
+            for g in fill:
+                if pos >= N: pos = 0
                 child[pos] = g
                 pos += 1
-
             child = torch.tensor(child, device=dev, dtype=torch.long)
 
             if rnd.random() < 0.2:
@@ -80,4 +81,52 @@ def ga_reorder(items: List[Item], truck, population=64, generations=20, seed=123
                 child[i], child[j] = child[j], child[i]
             new_pop.append(child)
         pop = torch.stack(new_pop, dim=0)
-    return [items[int(i)] for i in best_idx.tolist()]
+    # After GA finishes, the proxy fitness may not perfectly correlate with real 3D packing.
+    # Evaluate the top candidate orderings using the real packer and select the one that gives
+    # the maximum actual packed volume. This is more expensive but produces much better results.
+    try:
+        # compute final proxy scores and get top candidates
+        final_scores, _, _ = evaluate_population(pop, vol, wt, cap_vol, cap_wt)
+        k = min(8, pop.shape[0])
+        topk = torch.topk(final_scores, k=k)
+        candidates = pop[topk.indices].cpu().tolist()
+        best_order = [items[int(i)] for i in best_idx.tolist()]
+        # baseline packed volume for best_idx
+        baseline_placed, _ = pack(truck, Flags(), best_order)
+        best_vol = sum(p.L * p.W * p.H for p in baseline_placed)
+        # evaluate each candidate with the real packer
+        for cand_idx in candidates:
+            order_items = [items[int(i)] for i in cand_idx]
+            placed, _ = pack(truck, Flags(), order_items)
+            vol_used = sum(p.L * p.W * p.H for p in placed)
+            if vol_used > best_vol:
+                best_vol = vol_used
+                best_order = order_items
+        return best_order
+    except Exception:
+        # fallback to fastest proxy result on any error
+        return [items[int(i)] for i in best_idx.tolist()]
+
+    # optional cheap local search (pairwise swaps) to improve real packed volume
+    def _volume_for_order(order_items):
+        placed, _ = pack(truck, Flags(), order_items)
+        return sum(p.L * p.W * p.H for p in placed)
+
+    try:
+        # convert best_idx to list of items
+        cur_order = [items[int(i)] for i in best_idx.tolist()]
+        cur_vol = _volume_for_order(cur_order)
+        # small number of random pairwise swaps
+        for _ in range(min(300, max(50, len(items)*2))):
+            i = random.randrange(len(items)); j = random.randrange(len(items))
+            if i == j: continue
+            cur_order[i], cur_order[j] = cur_order[j], cur_order[i]
+            new_vol = _volume_for_order(cur_order)
+            if new_vol >= cur_vol:
+                cur_vol = new_vol
+            else:
+                # revert
+                cur_order[i], cur_order[j] = cur_order[j], cur_order[i]
+        return cur_order
+    except Exception:
+        return [items[int(i)] for i in best_idx.tolist()]

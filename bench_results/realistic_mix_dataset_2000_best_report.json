@@ -1,0 +1,14 @@
+{
+  "placed_items": 43,
+  "volume_utilization_pct": 22.75,
+  "weight_utilization_pct": 8.8,
+  "config": {
+    "lane_pct": 60,
+    "cand_size": 260,
+    "ga": [
+      48,
+      18
+    ],
+    "preselected": 180
+  }
+}

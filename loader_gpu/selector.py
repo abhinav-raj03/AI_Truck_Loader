@@ -1,26 +1,32 @@
 from ortools.sat.python import cp_model
 from .config import ALPHA_VOL, BETA_WT
 
-def select_subset(items, truck):
-    model = cp_model.CpModel()
-    n = len(items)
-    x = [model.NewBoolVar(f"x{i}") for i in range(n)]
-    weights = [int(round(it.weight)) for it in items]
-    vols = [int(round(it.vol*1000)) for it in items]  # m3 -> liters
-    model.Add(sum(weights[i]*x[i] for i in range(n)) <= int(truck.payload_kg))
-    model.Add(sum(vols[i]*x[i] for i in range(n)) <= int(truck.L*truck.W*truck.H*1000))
-    model.Maximize(sum(ALPHA_VOL*vols[i]*x[i] + BETA_WT*weights[i]*x[i] for i in range(n)))
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 1.8
-    solver.parameters.num_search_workers = 4
-    solver.parameters.cp_model_presolve = True
-    solver.parameters.linearization_level = 0
-    solver.parameters.search_branching = cp_model.PORTFOLIO_SEARCH
-    res = solver.Solve(model)
-    chosen = []
-    if res in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        for i in range(n):
-            if solver.Value(x[i])==1: chosen.append(items[i])
-    else:
-        chosen = items[:]
-    return chosen
+def select_subset(items, truck, max_keep=180):
+    scored = []
+    lane_w = truck.W / 2.0 - 0.01
+
+    for it in items:
+        # footprint score: prefer items that fit lane width nicely
+        footprint_eff = min(it.W, lane_w) * min(it.L, truck.L)
+
+        # stacking score: prefer items that have moderate height
+        height_eff = 1.0 / (1.0 + abs(it.H - 0.45))  # peak around 0.45m
+
+        # weight penalty to avoid overweight bottom-layer dominance
+        weight_eff = 1.0 / (1.0 + it.weight / 40.0)
+
+        # final score (tuned from real load planning heuristics)
+        score = (
+            (it.L * it.W * it.H) * 1.0 +   # volume
+            footprint_eff * 0.8 +
+            height_eff * 0.6 +
+            weight_eff * 0.4 -
+            it.fragile * 0.3
+        )
+
+        scored.append((score, it))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    # keep top N best candidates
+    return [x[1] for x in scored[:max_keep]]
